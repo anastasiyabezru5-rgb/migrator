@@ -1,0 +1,672 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Импорт тендеров в Битрикс24</title>
+  <script src="https://api.bitrix24.com/api/v1/"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  <style>
+    :root {
+      --bg: #f4f7fb;
+      --card: #ffffff;
+      --text: #1f2937;
+      --muted: #6b7280;
+      --primary: #2563eb;
+      --success: #16a34a;
+      --warn: #d97706;
+      --danger: #dc2626;
+      --line: #e5e7eb;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Arial, Helvetica, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+    }
+    .container {
+      max-width: 1120px;
+      margin: 28px auto;
+      padding: 0 16px;
+    }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 20px;
+      margin-bottom: 16px;
+      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.04);
+    }
+    h1 {
+      margin: 0 0 12px 0;
+      font-size: 24px;
+    }
+    .muted {
+      color: var(--muted);
+      margin: 0;
+    }
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 16px;
+    }
+    button, .file-label {
+      border: none;
+      padding: 10px 14px;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 14px;
+      font-weight: 600;
+      transition: transform .06s ease, opacity .2s ease;
+    }
+    button:hover, .file-label:hover { transform: translateY(-1px); }
+    button:disabled, .file-label.disabled {
+      opacity: 0.55;
+      cursor: not-allowed;
+      transform: none;
+    }
+    .btn-primary { background: var(--primary); color: #fff; }
+    .btn-success { background: var(--success); color: #fff; }
+    .btn-light { background: #eef2ff; color: #1e3a8a; }
+    #excelFile { display: none; }
+    .status-row {
+      margin-top: 12px;
+      display: flex;
+      gap: 16px;
+      flex-wrap: wrap;
+      font-size: 14px;
+    }
+    .chip {
+      border-radius: 999px;
+      padding: 6px 10px;
+      background: #eef2ff;
+      color: #1e3a8a;
+      font-weight: 600;
+    }
+    .chip.success { background: #dcfce7; color: #166534; }
+    .chip.warn { background: #fef3c7; color: #92400e; }
+    .chip.danger { background: #fee2e2; color: #991b1b; }
+    .progress-wrap {
+      width: 100%;
+      height: 18px;
+      border-radius: 999px;
+      background: #e5e7eb;
+      overflow: hidden;
+      margin-top: 14px;
+    }
+    .progress-bar {
+      height: 100%;
+      width: 0;
+      background: linear-gradient(90deg, #2563eb, #06b6d4);
+      transition: width .2s linear;
+    }
+    .table-wrap {
+      overflow: auto;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      margin-top: 14px;
+      max-height: 420px;
+      background: #fff;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      min-width: 900px;
+      font-size: 13px;
+    }
+    th, td {
+      border-bottom: 1px solid var(--line);
+      border-right: 1px solid var(--line);
+      padding: 8px;
+      text-align: left;
+      vertical-align: top;
+    }
+    th {
+      background: #f8fafc;
+      position: sticky;
+      top: 0;
+      z-index: 1;
+      white-space: nowrap;
+    }
+    tr:nth-child(even) td { background: #fcfdff; }
+    .log {
+      margin-top: 12px;
+      border-radius: 10px;
+      border: 1px solid var(--line);
+      background: #0f172a;
+      color: #d1d5db;
+      padding: 12px;
+      min-height: 84px;
+      max-height: 260px;
+      overflow: auto;
+      font-family: Consolas, "Courier New", monospace;
+      font-size: 12px;
+      white-space: pre-wrap;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="card">
+      <h1>Загрузка тендеров из Excel в Битрикс24</h1>
+      <p class="muted">Смарт-процесс ENTITY_TYPE_ID: <strong>1046</strong>. Логика: поиск по "№ лота", затем обновление или создание.</p>
+
+      <div class="actions">
+        <button id="connectBtn" class="btn-primary">Подключить Битрикс24</button>
+        <label id="fileLabel" for="excelFile" class="file-label btn-light disabled">Выбрать файл Excel</label>
+        <input id="excelFile" type="file" accept=".xlsx,.xls,.csv">
+        <button id="uploadBtn" class="btn-success" disabled>Загрузить в Битрикс24</button>
+      </div>
+
+      <div class="status-row">
+        <span id="authStatus" class="chip warn">Не авторизовано</span>
+        <span id="rowsStatus" class="chip">Строк: 0</span>
+        <span id="createdStatus" class="chip success">Создано: 0</span>
+        <span id="updatedStatus" class="chip">Обновлено: 0</span>
+        <span id="errorStatus" class="chip danger">Ошибок: 0</span>
+      </div>
+
+      <div class="progress-wrap">
+        <div id="progressBar" class="progress-bar"></div>
+      </div>
+      <div id="progressText" class="muted" style="margin-top: 8px;">Прогресс: 0%</div>
+
+      <div class="log" id="logBox">Ожидание действий...</div>
+    </div>
+
+    <div class="card">
+      <h2 style="margin:0 0 8px 0;font-size:20px;">Превью данных</h2>
+      <p class="muted">Показываются первые 50 строк после парсинга и нормализации.</p>
+      <div class="table-wrap">
+        <table id="previewTable">
+          <thead></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const ENTITY_TYPE_ID = 1046;
+    const UNIQUE_FIELD_CODE = "UF_CRM_6_1773996281557";
+    const CHUNK_SIZE = 50;
+
+    const FIELD_MAP = {
+      "№ лота": "UF_CRM_6_1773996281557",
+      "Дата внесения в реестр": "UF_CRM_6_1773995692904",
+      "Предмет контракта": "UF_CRM_6_1773995709007",
+      "Поставляемые товары": "UF_CRM_6_1773995720882",
+      "Условия": "UF_CRM_6_1773995743148",
+      "Сумма преф.": "UF_CRM_6_1773995755206",
+      "Дата окончания подачи заявок": "UF_CRM_6_1770752052503",
+      "Время окончания подачи заявок": "UF_CRM_6_1773996032797",
+      "Дата окончания срока рассмотрения заявок": "UF_CRM_6_1773996053856",
+      "Дата проведения": "UF_CRM_6_1770752076038",
+      "Время проведения": "UF_CRM_6_1773996085711",
+      "Регион": "UF_CRM_6_1773996096803",
+      "Заказчик": "UF_CRM_6_1773996107755",
+      "НМЦК": "UF_CRM_6_1773996136572",
+      "Размер обеспечения заявки": "UF_CRM_6_1773996158767",
+      "Размер обеспечения исполнения контракта": "UF_CRM_6_1773996170068",
+      "Процент банка по БГ": "UF_CRM_6_1773996182176",
+      "Место и срок поставки": "UF_CRM_6_1773996200687",
+      "Статус": "UF_CRM_6_1773996218427",
+      "Примечание к статусу": "UF_CRM_6_1773996229784",
+      "Участники": "UF_CRM_6_1773996241782",
+      "Итог расчета -% падения": "UF_CRM_6_1773996254856",
+      "Форма проведения": "UF_CRM_6_1773996265666",
+      "Площадка": "UF_CRM_6_1773996292681",
+      "Ссылка": "UF_CRM_6_1773996306937",
+      "Предприятие участник": "UF_CRM_6_1773996321147",
+      "Победитель": "UF_CRM_6_1773996330563",
+      "Сумма выигранного лота": "UF_CRM_6_1773996348246",
+      "Примечание": "UF_CRM_6_1773996373155"
+    };
+
+    const DATE_FIELDS = new Set([
+      "UF_CRM_6_1773995692904",
+      "UF_CRM_6_1770752052503",
+      "UF_CRM_6_1773996053856",
+      "UF_CRM_6_1770752076038"
+    ]);
+
+    const MONEY_FIELD = "UF_CRM_6_1773996348246";
+    const EXCEL_HEADERS = Object.keys(FIELD_MAP);
+
+    const state = {
+      isAuthorized: false,
+      rows: [],
+      created: 0,
+      updated: 0,
+      errors: []
+    };
+
+    const connectBtn = document.getElementById("connectBtn");
+    const uploadBtn = document.getElementById("uploadBtn");
+    const fileInput = document.getElementById("excelFile");
+    const fileLabel = document.getElementById("fileLabel");
+    const authStatus = document.getElementById("authStatus");
+    const rowsStatus = document.getElementById("rowsStatus");
+    const createdStatus = document.getElementById("createdStatus");
+    const updatedStatus = document.getElementById("updatedStatus");
+    const errorStatus = document.getElementById("errorStatus");
+    const progressBar = document.getElementById("progressBar");
+    const progressText = document.getElementById("progressText");
+    const logBox = document.getElementById("logBox");
+    const previewTable = document.getElementById("previewTable");
+
+    function log(message) {
+      const ts = new Date().toLocaleTimeString();
+      logBox.textContent += `\n[${ts}] ${message}`;
+      logBox.scrollTop = logBox.scrollHeight;
+    }
+
+    function setProgress(current, total) {
+      const pct = total > 0 ? Math.min(100, Math.round((current / total) * 100)) : 0;
+      progressBar.style.width = `${pct}%`;
+      progressText.textContent = `Прогресс: ${pct}% (${current}/${total})`;
+    }
+
+    function updateStats() {
+      rowsStatus.textContent = `Строк: ${state.rows.length}`;
+      createdStatus.textContent = `Создано: ${state.created}`;
+      updatedStatus.textContent = `Обновлено: ${state.updated}`;
+      errorStatus.textContent = `Ошибок: ${state.errors.length}`;
+    }
+
+    function sanitizeString(value) {
+      if (value === null || value === undefined) return "";
+      return String(value).trim();
+    }
+
+    function normalizeNumber(value) {
+      const raw = sanitizeString(value);
+      if (!raw) return "";
+      const prepared = raw.replace(/\s/g, "").replace(",", ".").replace(/[^\d.-]/g, "");
+      const num = Number(prepared);
+      return Number.isFinite(num) ? num.toString() : "";
+    }
+
+    function excelSerialToDateString(serial) {
+      const date = XLSX.SSF.parse_date_code(serial);
+      if (!date) return "";
+      const yyyy = String(date.y).padStart(4, "0");
+      const mm = String(date.m).padStart(2, "0");
+      const dd = String(date.d).padStart(2, "0");
+      return `${yyyy}-${mm}-${dd}`;
+    }
+
+    function normalizeDate(value) {
+      if (value === null || value === undefined || value === "") return "";
+      if (typeof value === "number" && Number.isFinite(value)) {
+        return excelSerialToDateString(value);
+      }
+
+      const raw = sanitizeString(value);
+      if (!raw) return "";
+
+      const dotted = raw.match(/^(\d{1,2})\.(\d{1,2})\.(\d{2,4})$/);
+      if (dotted) {
+        let dd = Number(dotted[1]);
+        let mm = Number(dotted[2]);
+        let yy = Number(dotted[3]);
+        if (yy < 100) yy = yy >= 70 ? 1900 + yy : 2000 + yy;
+        if (dd >= 1 && dd <= 31 && mm >= 1 && mm <= 12) {
+          return `${yy.toString().padStart(4, "0")}-${mm.toString().padStart(2, "0")}-${dd.toString().padStart(2, "0")}`;
+        }
+      }
+
+      const slash = raw.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
+      if (slash) {
+        let a = Number(slash[1]);
+        let b = Number(slash[2]);
+        let yy = Number(slash[3]);
+        if (yy < 100) yy = yy >= 70 ? 1900 + yy : 2000 + yy;
+
+        let mm = a;
+        let dd = b;
+        if (a > 12 && b <= 12) {
+          dd = a;
+          mm = b;
+        }
+        if (dd >= 1 && dd <= 31 && mm >= 1 && mm <= 12) {
+          return `${yy.toString().padStart(4, "0")}-${mm.toString().padStart(2, "0")}-${dd.toString().padStart(2, "0")}`;
+        }
+      }
+
+      const parsed = new Date(raw);
+      if (!Number.isNaN(parsed.getTime())) {
+        const yyyy = parsed.getFullYear();
+        const mm = String(parsed.getMonth() + 1).padStart(2, "0");
+        const dd = String(parsed.getDate()).padStart(2, "0");
+        return `${yyyy}-${mm}-${dd}`;
+      }
+      return "";
+    }
+
+    function normalizeValue(fieldCode, value) {
+      if (DATE_FIELDS.has(fieldCode)) {
+        return normalizeDate(value);
+      }
+      if (fieldCode === MONEY_FIELD) {
+        const money = normalizeNumber(value);
+        return money ? { VALUE: money, CURRENCY: "RUB" } : "";
+      }
+      if (typeof value === "number") return String(value);
+      return sanitizeString(value);
+    }
+
+    function mapExcelRowToBitrix(row) {
+      const fields = {};
+      for (const excelHeader of Object.keys(FIELD_MAP)) {
+        const fieldCode = FIELD_MAP[excelHeader];
+        const rawValue = row[excelHeader];
+        const normalized = normalizeValue(fieldCode, rawValue);
+        if (normalized !== "") {
+          fields[fieldCode] = normalized;
+        }
+      }
+
+      const lot = sanitizeString(fields[UNIQUE_FIELD_CODE]);
+      if (lot) {
+        const subject = sanitizeString(fields["UF_CRM_6_1773995709007"]);
+        fields.TITLE = `${lot} - ${subject || "Без предмета контракта"}`;
+      }
+
+      return fields;
+    }
+
+    function renderPreview(rows) {
+      const thead = previewTable.querySelector("thead");
+      const tbody = previewTable.querySelector("tbody");
+      thead.innerHTML = "";
+      tbody.innerHTML = "";
+
+      const previewRows = rows.slice(0, 50);
+      if (!previewRows.length) return;
+
+      const trHead = document.createElement("tr");
+      for (const header of EXCEL_HEADERS) {
+        const th = document.createElement("th");
+        th.textContent = header;
+        trHead.appendChild(th);
+      }
+      thead.appendChild(trHead);
+
+      for (const row of previewRows) {
+        const tr = document.createElement("tr");
+        for (const header of EXCEL_HEADERS) {
+          const td = document.createElement("td");
+          td.textContent = sanitizeString(row[header]);
+          tr.appendChild(td);
+        }
+        tbody.appendChild(tr);
+      }
+    }
+
+    function bxCall(method, params = {}) {
+      return new Promise((resolve, reject) => {
+        BX24.callMethod(method, params, (result) => {
+          if (!result) {
+            reject(new Error("Пустой ответ от BX24.callMethod"));
+            return;
+          }
+          if (result.error()) {
+            const errorDescription = result.error_description() || "Неизвестная ошибка";
+            reject(new Error(`${result.error()}: ${errorDescription}`));
+            return;
+          }
+          resolve(result.data());
+        });
+      });
+    }
+
+    function bxBatch(cmdMap, halt = 0) {
+      return bxCall("batch", { cmd: cmdMap, halt });
+    }
+
+    function splitChunks(array, size) {
+      const chunks = [];
+      for (let i = 0; i < array.length; i += size) {
+        chunks.push(array.slice(i, i + size));
+      }
+      return chunks;
+    }
+
+    function buildFieldsQuery(fields) {
+      const parts = [];
+      Object.entries(fields).forEach(([key, value]) => {
+        if (value === "" || value === null || value === undefined) return;
+        if (typeof value === "object" && !Array.isArray(value)) {
+          Object.entries(value).forEach(([subKey, subValue]) => {
+            if (subValue === "" || subValue === null || subValue === undefined) return;
+            parts.push(`fields[${encodeURIComponent(key)}][${encodeURIComponent(subKey)}]=${encodeURIComponent(String(subValue))}`);
+          });
+          return;
+        }
+        parts.push(`fields[${encodeURIComponent(key)}]=${encodeURIComponent(String(value))}`);
+      });
+      return parts.join("&");
+    }
+
+    async function connectBitrix() {
+      log("Инициализация BX24...");
+      try {
+        await new Promise((resolve, reject) => {
+          BX24.init(() => {
+            try {
+              BX24.callMethod("profile", {}, (res) => {
+                if (res.error()) {
+                  reject(new Error(res.error_description() || "Не удалось авторизоваться"));
+                  return;
+                }
+                resolve();
+              });
+            } catch (err) {
+              reject(err);
+            }
+          });
+        });
+
+        state.isAuthorized = true;
+        authStatus.textContent = "Подключено";
+        authStatus.className = "chip success";
+        fileLabel.classList.remove("disabled");
+        uploadBtn.disabled = state.rows.length === 0;
+        log("Авторизация успешна.");
+      } catch (err) {
+        state.isAuthorized = false;
+        authStatus.textContent = "Ошибка авторизации";
+        authStatus.className = "chip danger";
+        log(`Ошибка подключения: ${err.message}`);
+        alert("Не удалось подключить Битрикс24.\nОткройте страницу внутри приложения Битрикс24 (в iframe) и повторите.");
+      }
+    }
+
+    function parseExcelFile(file) {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = (e) => {
+          try {
+            const data = new Uint8Array(e.target.result);
+            const workbook = XLSX.read(data, { type: "array", cellDates: false });
+            const sheet = workbook.Sheets[workbook.SheetNames[0]];
+            const rows = XLSX.utils.sheet_to_json(sheet, { defval: "" });
+            resolve(rows);
+          } catch (err) {
+            reject(err);
+          }
+        };
+        reader.onerror = () => reject(new Error("Ошибка чтения файла"));
+        reader.readAsArrayBuffer(file);
+      });
+    }
+
+    async function uploadRowsToBitrix(rows) {
+      state.created = 0;
+      state.updated = 0;
+      state.errors = [];
+      updateStats();
+      setProgress(0, rows.length);
+
+      let processed = 0;
+      const chunks = splitChunks(rows, CHUNK_SIZE);
+
+      for (let c = 0; c < chunks.length; c++) {
+        const chunk = chunks[c];
+        const normalizedRows = chunk.map((rawRow, idx) => ({
+          excelRowIndex: (c * CHUNK_SIZE) + idx + 2,
+          fields: mapExcelRowToBitrix(rawRow)
+        }));
+
+        const listCmd = {};
+        const candidates = [];
+
+        normalizedRows.forEach((item, idx) => {
+          const lot = sanitizeString(item.fields[UNIQUE_FIELD_CODE]);
+          if (!lot) {
+            state.errors.push(`Строка ${item.excelRowIndex}: не заполнено поле "№ лота".`);
+            return;
+          }
+          candidates.push(item);
+          listCmd[`q${idx}`] = `crm.item.list?entityTypeId=${ENTITY_TYPE_ID}&filter[=${UNIQUE_FIELD_CODE}]=${encodeURIComponent(lot)}&select[]=id&select[]=${UNIQUE_FIELD_CODE}`;
+        });
+
+        let listData = {};
+        if (Object.keys(listCmd).length > 0) {
+          try {
+            listData = await bxBatch(listCmd, 0);
+          } catch (err) {
+            candidates.forEach((candidate) => {
+              state.errors.push(`Строка ${candidate.excelRowIndex}: ошибка поиска по № лота (${err.message}).`);
+            });
+            processed += chunk.length;
+            setProgress(processed, rows.length);
+            updateStats();
+            log(`Блок ${c + 1}/${chunks.length}: ошибка list batch.`);
+            continue;
+          }
+        }
+
+        const saveCmd = {};
+        const saveMeta = [];
+        let cmdIndex = 0;
+
+        candidates.forEach((candidate, localIndex) => {
+          const queryKey = `q${localIndex}`;
+          const foundRows = (listData.result && listData.result[queryKey] && listData.result[queryKey].items) ? listData.result[queryKey].items : [];
+          const found = foundRows.length > 0 ? foundRows[0] : null;
+          const payload = candidate.fields;
+
+          if (!payload.TITLE) {
+            state.errors.push(`Строка ${candidate.excelRowIndex}: не удалось сформировать TITLE.`);
+            return;
+          }
+
+          const fieldsQuery = buildFieldsQuery(payload);
+
+          if (found && found.id) {
+            saveCmd[`s${cmdIndex}`] = `crm.item.update?entityTypeId=${ENTITY_TYPE_ID}&id=${found.id}&${fieldsQuery}`;
+            saveMeta.push({ key: `s${cmdIndex}`, row: candidate.excelRowIndex, mode: "update" });
+          } else {
+            saveCmd[`s${cmdIndex}`] = `crm.item.add?entityTypeId=${ENTITY_TYPE_ID}&${fieldsQuery}`;
+            saveMeta.push({ key: `s${cmdIndex}`, row: candidate.excelRowIndex, mode: "add" });
+          }
+          cmdIndex++;
+        });
+
+        if (Object.keys(saveCmd).length > 0) {
+          try {
+            const saveRes = await bxBatch(saveCmd, 0);
+
+            saveMeta.forEach((meta) => {
+              const hasError = saveRes.result_error && saveRes.result_error[meta.key];
+              if (hasError) {
+                const e = saveRes.result_error[meta.key];
+                const text = e.error_description || e.error || "Неизвестная ошибка";
+                state.errors.push(`Строка ${meta.row}: ${text}`);
+              } else {
+                if (meta.mode === "add") state.created += 1;
+                if (meta.mode === "update") state.updated += 1;
+              }
+            });
+          } catch (err) {
+            saveMeta.forEach((meta) => {
+              state.errors.push(`Строка ${meta.row}: ошибка сохранения (${err.message}).`);
+            });
+          }
+        }
+
+        processed += chunk.length;
+        setProgress(processed, rows.length);
+        updateStats();
+        log(`Блок ${c + 1}/${chunks.length} обработан.`);
+      }
+    }
+
+    connectBtn.addEventListener("click", connectBitrix);
+
+    fileInput.addEventListener("change", async (e) => {
+      const file = e.target.files && e.target.files[0];
+      if (!file) return;
+      if (!state.isAuthorized) {
+        alert("Сначала подключите Битрикс24.");
+        return;
+      }
+
+      try {
+        log(`Чтение файла: ${file.name}`);
+        const rows = await parseExcelFile(file);
+        state.rows = rows;
+        renderPreview(rows);
+        updateStats();
+        uploadBtn.disabled = rows.length === 0;
+        log(`Файл разобран. Строк: ${rows.length}.`);
+        setProgress(0, rows.length);
+      } catch (err) {
+        log(`Ошибка парсинга: ${err.message}`);
+        alert(`Ошибка парсинга файла: ${err.message}`);
+      }
+    });
+
+    uploadBtn.addEventListener("click", async () => {
+      if (!state.isAuthorized) {
+        alert("Сначала подключите Битрикс24.");
+        return;
+      }
+      if (!state.rows.length) {
+        alert("Сначала выберите Excel-файл.");
+        return;
+      }
+
+      uploadBtn.disabled = true;
+      connectBtn.disabled = true;
+      fileLabel.classList.add("disabled");
+      state.errors = [];
+      log("Запуск загрузки в Битрикс24...");
+
+      try {
+        await uploadRowsToBitrix(state.rows);
+        log(`Загрузка завершена. Создано: ${state.created}, обновлено: ${state.updated}, ошибок: ${state.errors.length}.`);
+        if (state.errors.length) {
+          const previewErrors = state.errors.slice(0, 25).join("\n");
+          log(`Ошибки:\n${previewErrors}${state.errors.length > 25 ? "\n... (см. счетчик ошибок)" : ""}`);
+        }
+      } catch (err) {
+        state.errors.push(err.message || "Неизвестная ошибка импорта");
+        updateStats();
+        log(`Критическая ошибка: ${err.message}`);
+      } finally {
+        uploadBtn.disabled = false;
+        connectBtn.disabled = false;
+        fileLabel.classList.remove("disabled");
+      }
+    });
+
+    updateStats();
+    setProgress(0, 0);
+  </script>
+</body>
+</html>
