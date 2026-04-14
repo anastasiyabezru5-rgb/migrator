@@ -189,9 +189,11 @@
 
   <script>
     const CLIENT_ID = "local.69de049c1b7258.26689484";
+    const CLIENT_SECRET = "PUT_YOUR_CLIENT_SECRET_HERE";
     const PORTAL_URL = "https://bitrix.willmed.ru";
     const REDIRECT_URI = "https://anastasiyabezru5-rgb.github.io/migrator/";
-    const TOKEN_STORAGE_KEY = "b24_access_token";
+    const TOKEN_STORAGE_KEY = "bitrix_access_token";
+    const DOMAIN_STORAGE_KEY = "bitrix_domain";
     const OAUTH_STATE = "test";
 
     const ENTITY_TYPE_ID = 1046;
@@ -243,6 +245,7 @@
     const state = {
       isAuthorized: false,
       token: "",
+      domain: "bitrix.willmed.ru",
       rows: [],
       created: 0,
       updated: 0,
@@ -295,7 +298,9 @@
     function clearAuthorization() {
       state.isAuthorized = false;
       state.token = "";
+      state.domain = "bitrix.willmed.ru";
       localStorage.removeItem(TOKEN_STORAGE_KEY);
+      localStorage.removeItem(DOMAIN_STORAGE_KEY);
       authStatus.textContent = "Не авторизовано";
       authStatus.className = "chip warn";
       fileLabel.classList.add("disabled");
@@ -454,6 +459,7 @@
     function extractCodeFromUrl() {
       const params = new URLSearchParams(window.location.search);
       const code = params.get("code");
+      const domain = params.get("domain");
       const stateValue = params.get("state");
       const error = params.get("error");
       const errorDescription = params.get("error_description");
@@ -467,21 +473,25 @@
         throw new Error("Неверный state в OAuth callback.");
       }
 
-      return code;
+      return {
+        code,
+        domain: domain || "bitrix.willmed.ru"
+      };
     }
 
     function buildOAuthUrl() {
-      return `${PORTAL_URL}/oauth/authorize/?client_id=${encodeURIComponent(CLIENT_ID)}&response_type=code&state=${encodeURIComponent(OAUTH_STATE)}`;
+      return `${PORTAL_URL}/oauth/authorize/?client_id=${encodeURIComponent(CLIENT_ID)}&response_type=code&state=${encodeURIComponent(OAUTH_STATE)}&redirect_uri=${encodeURIComponent(REDIRECT_URI)}`;
     }
 
     async function exchangeCodeToToken(code) {
       const body = new URLSearchParams();
       body.set("grant_type", "authorization_code");
       body.set("client_id", CLIENT_ID);
+      body.set("client_secret", CLIENT_SECRET);
       body.set("code", code);
       body.set("redirect_uri", REDIRECT_URI);
 
-      const response = await fetch(`${PORTAL_URL}/oauth/token/`, {
+      const response = await fetch("https://oauth.bitrix.info/oauth/token/", {
         method: "POST",
         headers: { "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8" },
         body: body.toString()
@@ -516,7 +526,8 @@
 
     async function restCall(method, params = {}) {
       if (!state.token) throw new Error("Нет access_token. Подключите Битрикс24.");
-      const url = `${PORTAL_URL}/rest/${method}.json?auth=${encodeURIComponent(state.token)}`;
+      const baseDomain = state.domain || localStorage.getItem(DOMAIN_STORAGE_KEY) || "bitrix.willmed.ru";
+      const url = `https://${baseDomain}/rest/${method}.json?auth=${encodeURIComponent(state.token)}`;
       const formData = new URLSearchParams();
       Object.entries(params).forEach(([key, value]) => appendFormData(formData, key, value));
 
@@ -542,8 +553,9 @@
       return response;
     }
 
-    async function validateToken(token) {
+    async function validateToken(token, domain) {
       state.token = token;
+      state.domain = domain || state.domain || "bitrix.willmed.ru";
       try {
         await restCall("profile");
         setAuthorized(token);
@@ -740,13 +752,15 @@
       setProgress(0, 0);
 
       try {
-        const code = extractCodeFromUrl();
-        if (code) {
+        const callbackData = extractCodeFromUrl();
+        if (callbackData.code) {
           log("Получен OAuth code, выполняю обмен на access_token...");
-          const token = await exchangeCodeToToken(code);
+          const token = await exchangeCodeToToken(callbackData.code);
           localStorage.setItem(TOKEN_STORAGE_KEY, token);
+          localStorage.setItem(DOMAIN_STORAGE_KEY, callbackData.domain);
+          state.domain = callbackData.domain;
           history.replaceState({}, document.title, REDIRECT_URI);
-          log("Access token получен и сохранен.");
+          log(`Access token получен и сохранен для домена ${callbackData.domain}.`);
         }
       } catch (err) {
         clearAuthorization();
@@ -755,13 +769,14 @@
       }
 
       const token = localStorage.getItem(TOKEN_STORAGE_KEY) || "";
+      const domain = localStorage.getItem(DOMAIN_STORAGE_KEY) || "bitrix.willmed.ru";
       if (!token) {
         clearAuthorization();
         return;
       }
 
       log("Проверка сохраненного токена...");
-      await validateToken(token);
+      await validateToken(token, domain);
     })();
   </script>
 </body>
