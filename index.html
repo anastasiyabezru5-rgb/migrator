@@ -192,6 +192,7 @@
     const PORTAL_URL = "https://bitrix.willmed.ru";
     const REDIRECT_URI = "https://anastasiyabezru5-rgb.github.io/migrator/";
     const TOKEN_STORAGE_KEY = "b24_access_token";
+    const OAUTH_STATE = "test";
 
     const ENTITY_TYPE_ID = 1046;
     const UNIQUE_FIELD_CODE = "UF_CRM_6_1773996281557";
@@ -450,24 +451,55 @@
       return parts.join("&");
     }
 
-    function extractTokenFromUrl() {
-      const hash = window.location.hash.startsWith("#") ? window.location.hash.slice(1) : "";
-      const params = new URLSearchParams(hash);
-      const token = params.get("access_token");
-      if (token) {
-        localStorage.setItem(TOKEN_STORAGE_KEY, token);
-        history.replaceState({}, document.title, REDIRECT_URI);
-        log("Access token получен и сохранен.");
+    function extractCodeFromUrl() {
+      const params = new URLSearchParams(window.location.search);
+      const code = params.get("code");
+      const stateValue = params.get("state");
+      const error = params.get("error");
+      const errorDescription = params.get("error_description");
+
+      if (error) {
+        throw new Error(`OAuth ошибка: ${error} ${errorDescription || ""}`.trim());
       }
-      return token;
+
+      if (!code) return "";
+      if (stateValue && stateValue !== OAUTH_STATE) {
+        throw new Error("Неверный state в OAuth callback.");
+      }
+
+      return code;
     }
 
     function buildOAuthUrl() {
-      const url = new URL(`${PORTAL_URL}/oauth/authorize/`);
-      url.searchParams.set("client_id", CLIENT_ID);
-      url.searchParams.set("response_type", "token");
-      url.searchParams.set("redirect_uri", REDIRECT_URI);
-      return url.toString();
+      return `${PORTAL_URL}/oauth/authorize/?client_id=${encodeURIComponent(CLIENT_ID)}&response_type=code&state=${encodeURIComponent(OAUTH_STATE)}`;
+    }
+
+    async function exchangeCodeToToken(code) {
+      const body = new URLSearchParams();
+      body.set("grant_type", "authorization_code");
+      body.set("client_id", CLIENT_ID);
+      body.set("code", code);
+      body.set("redirect_uri", REDIRECT_URI);
+
+      const response = await fetch(`${PORTAL_URL}/oauth/token/`, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8" },
+        body: body.toString()
+      });
+
+      if (!response.ok) {
+        throw new Error(`OAuth token HTTP ${response.status}`);
+      }
+
+      const data = await response.json();
+      if (data.error) {
+        throw new Error(`OAuth token error: ${data.error_description || data.error}`);
+      }
+      if (!data.access_token) {
+        throw new Error("OAuth token не содержит access_token.");
+      }
+
+      return data.access_token;
     }
 
     function appendFormData(params, key, value) {
@@ -707,14 +739,29 @@
       updateStats();
       setProgress(0, 0);
 
-      const tokenFromUrl = extractTokenFromUrl();
-      const token = tokenFromUrl || localStorage.getItem(TOKEN_STORAGE_KEY) || "";
-      if (token) {
-        log("Проверка сохраненного токена...");
-        await validateToken(token);
-      } else {
+      try {
+        const code = extractCodeFromUrl();
+        if (code) {
+          log("Получен OAuth code, выполняю обмен на access_token...");
+          const token = await exchangeCodeToToken(code);
+          localStorage.setItem(TOKEN_STORAGE_KEY, token);
+          history.replaceState({}, document.title, REDIRECT_URI);
+          log("Access token получен и сохранен.");
+        }
+      } catch (err) {
         clearAuthorization();
+        log(err.message);
+        alert(err.message);
       }
+
+      const token = localStorage.getItem(TOKEN_STORAGE_KEY) || "";
+      if (!token) {
+        clearAuthorization();
+        return;
+      }
+
+      log("Проверка сохраненного токена...");
+      await validateToken(token);
     })();
   </script>
 </body>
