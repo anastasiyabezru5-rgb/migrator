@@ -4,7 +4,6 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Импорт тендеров в Битрикс24</title>
-  <script src="https://api.bitrix24.com/api/v1/"></script>
   <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
   <style>
     :root {
@@ -189,6 +188,11 @@
   </div>
 
   <script>
+    const CLIENT_ID = "local.69de049c1b7258.26689484";
+    const PORTAL_URL = "https://bitrix.willmed.ru";
+    const REDIRECT_URI = "https://anastasiyabezru5-rgb.github.io/migrator/";
+    const TOKEN_STORAGE_KEY = "b24_access_token";
+
     const ENTITY_TYPE_ID = 1046;
     const UNIQUE_FIELD_CODE = "UF_CRM_6_1773996281557";
     const CHUNK_SIZE = 50;
@@ -237,6 +241,7 @@
 
     const state = {
       isAuthorized: false,
+      token: "",
       rows: [],
       created: 0,
       updated: 0,
@@ -274,6 +279,27 @@
       createdStatus.textContent = `Создано: ${state.created}`;
       updatedStatus.textContent = `Обновлено: ${state.updated}`;
       errorStatus.textContent = `Ошибок: ${state.errors.length}`;
+    }
+
+    function setAuthorized(token) {
+      state.isAuthorized = true;
+      state.token = token;
+      authStatus.textContent = "Подключено";
+      authStatus.className = "chip success";
+      fileLabel.classList.remove("disabled");
+      uploadBtn.disabled = state.rows.length === 0;
+      connectBtn.textContent = "Переподключить";
+    }
+
+    function clearAuthorization() {
+      state.isAuthorized = false;
+      state.token = "";
+      localStorage.removeItem(TOKEN_STORAGE_KEY);
+      authStatus.textContent = "Не авторизовано";
+      authStatus.className = "chip warn";
+      fileLabel.classList.add("disabled");
+      uploadBtn.disabled = true;
+      connectBtn.textContent = "Подключить";
     }
 
     function sanitizeString(value) {
@@ -347,9 +373,7 @@
     }
 
     function normalizeValue(fieldCode, value) {
-      if (DATE_FIELDS.has(fieldCode)) {
-        return normalizeDate(value);
-      }
+      if (DATE_FIELDS.has(fieldCode)) return normalizeDate(value);
       if (fieldCode === MONEY_FIELD) {
         const money = normalizeNumber(value);
         return money ? { VALUE: money, CURRENCY: "RUB" } : "";
@@ -364,9 +388,7 @@
         const fieldCode = FIELD_MAP[excelHeader];
         const rawValue = row[excelHeader];
         const normalized = normalizeValue(fieldCode, rawValue);
-        if (normalized !== "") {
-          fields[fieldCode] = normalized;
-        }
+        if (normalized !== "") fields[fieldCode] = normalized;
       }
 
       const lot = sanitizeString(fields[UNIQUE_FIELD_CODE]);
@@ -406,32 +428,9 @@
       }
     }
 
-    function bxCall(method, params = {}) {
-      return new Promise((resolve, reject) => {
-        BX24.callMethod(method, params, (result) => {
-          if (!result) {
-            reject(new Error("Пустой ответ от BX24.callMethod"));
-            return;
-          }
-          if (result.error()) {
-            const errorDescription = result.error_description() || "Неизвестная ошибка";
-            reject(new Error(`${result.error()}: ${errorDescription}`));
-            return;
-          }
-          resolve(result.data());
-        });
-      });
-    }
-
-    function bxBatch(cmdMap, halt = 0) {
-      return bxCall("batch", { cmd: cmdMap, halt });
-    }
-
     function splitChunks(array, size) {
       const chunks = [];
-      for (let i = 0; i < array.length; i += size) {
-        chunks.push(array.slice(i, i + size));
-      }
+      for (let i = 0; i < array.length; i += size) chunks.push(array.slice(i, i + size));
       return chunks;
     }
 
@@ -451,38 +450,80 @@
       return parts.join("&");
     }
 
-    async function connectBitrix() {
-      log("Инициализация BX24...");
-      try {
-        await new Promise((resolve, reject) => {
-          BX24.init(() => {
-            try {
-              BX24.callMethod("profile", {}, (res) => {
-                if (res.error()) {
-                  reject(new Error(res.error_description() || "Не удалось авторизоваться"));
-                  return;
-                }
-                resolve();
-              });
-            } catch (err) {
-              reject(err);
-            }
-          });
-        });
-
-        state.isAuthorized = true;
-        authStatus.textContent = "Подключено";
-        authStatus.className = "chip success";
-        fileLabel.classList.remove("disabled");
-        uploadBtn.disabled = state.rows.length === 0;
-        log("Авторизация успешна.");
-      } catch (err) {
-        state.isAuthorized = false;
-        authStatus.textContent = "Ошибка авторизации";
-        authStatus.className = "chip danger";
-        log(`Ошибка подключения: ${err.message}`);
-        alert("Не удалось подключить Битрикс24.\nОткройте страницу внутри приложения Битрикс24 (в iframe) и повторите.");
+    function extractTokenFromUrl() {
+      const hash = window.location.hash.startsWith("#") ? window.location.hash.slice(1) : "";
+      const params = new URLSearchParams(hash);
+      const token = params.get("access_token");
+      if (token) {
+        localStorage.setItem(TOKEN_STORAGE_KEY, token);
+        history.replaceState({}, document.title, REDIRECT_URI);
+        log("Access token получен и сохранен.");
       }
+      return token;
+    }
+
+    function buildOAuthUrl() {
+      const url = new URL(`${PORTAL_URL}/oauth/authorize/`);
+      url.searchParams.set("client_id", CLIENT_ID);
+      url.searchParams.set("response_type", "token");
+      url.searchParams.set("redirect_uri", REDIRECT_URI);
+      return url.toString();
+    }
+
+    function appendFormData(params, key, value) {
+      if (Array.isArray(value)) {
+        value.forEach((item, idx) => appendFormData(params, `${key}[${idx}]`, item));
+        return;
+      }
+      if (value && typeof value === "object") {
+        Object.entries(value).forEach(([childKey, childValue]) => appendFormData(params, `${key}[${childKey}]`, childValue));
+        return;
+      }
+      params.append(key, value === null || value === undefined ? "" : String(value));
+    }
+
+    async function restCall(method, params = {}) {
+      if (!state.token) throw new Error("Нет access_token. Подключите Битрикс24.");
+      const url = `${PORTAL_URL}/rest/${method}.json?auth=${encodeURIComponent(state.token)}`;
+      const formData = new URLSearchParams();
+      Object.entries(params).forEach(([key, value]) => appendFormData(formData, key, value));
+
+      const response = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8" },
+        body: formData.toString()
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status} ${response.statusText}`);
+      }
+
+      const data = await response.json();
+      if (data.error) {
+        throw new Error(`${data.error}: ${data.error_description || "Неизвестная ошибка"}`);
+      }
+      return data;
+    }
+
+    async function batchCall(cmdMap, halt = 0) {
+      const response = await restCall("batch", { halt, cmd: cmdMap });
+      return response;
+    }
+
+    async function validateToken(token) {
+      state.token = token;
+      try {
+        await restCall("profile");
+        setAuthorized(token);
+        log("Токен валиден, подключение активно.");
+      } catch (err) {
+        clearAuthorization();
+        log(`Токен недействителен: ${err.message}`);
+      }
+    }
+
+    function connectBitrix() {
+      window.location.href = buildOAuthUrl();
     }
 
     function parseExcelFile(file) {
@@ -517,7 +558,7 @@
       for (let c = 0; c < chunks.length; c++) {
         const chunk = chunks[c];
         const normalizedRows = chunk.map((rawRow, idx) => ({
-          excelRowIndex: (c * CHUNK_SIZE) + idx + 2,
+          excelRowIndex: c * CHUNK_SIZE + idx + 2,
           fields: mapExcelRowToBitrix(rawRow)
         }));
 
@@ -537,7 +578,7 @@
         let listData = {};
         if (Object.keys(listCmd).length > 0) {
           try {
-            listData = await bxBatch(listCmd, 0);
+            listData = await batchCall(listCmd, 0);
           } catch (err) {
             candidates.forEach((candidate) => {
               state.errors.push(`Строка ${candidate.excelRowIndex}: ошибка поиска по № лота (${err.message}).`);
@@ -556,8 +597,8 @@
 
         candidates.forEach((candidate, localIndex) => {
           const queryKey = `q${localIndex}`;
-          const foundRows = (listData.result && listData.result[queryKey] && listData.result[queryKey].items) ? listData.result[queryKey].items : [];
-          const found = foundRows.length > 0 ? foundRows[0] : null;
+          const foundRows = listData.result?.result?.[queryKey]?.items || [];
+          const found = foundRows[0] || null;
           const payload = candidate.fields;
 
           if (!payload.TITLE) {
@@ -566,7 +607,6 @@
           }
 
           const fieldsQuery = buildFieldsQuery(payload);
-
           if (found && found.id) {
             saveCmd[`s${cmdIndex}`] = `crm.item.update?entityTypeId=${ENTITY_TYPE_ID}&id=${found.id}&${fieldsQuery}`;
             saveMeta.push({ key: `s${cmdIndex}`, row: candidate.excelRowIndex, mode: "update" });
@@ -579,14 +619,12 @@
 
         if (Object.keys(saveCmd).length > 0) {
           try {
-            const saveRes = await bxBatch(saveCmd, 0);
-
+            const saveRes = await batchCall(saveCmd, 0);
             saveMeta.forEach((meta) => {
-              const hasError = saveRes.result_error && saveRes.result_error[meta.key];
+              const hasError = saveRes.result?.result_error?.[meta.key];
               if (hasError) {
-                const e = saveRes.result_error[meta.key];
-                const text = e.error_description || e.error || "Неизвестная ошибка";
-                state.errors.push(`Строка ${meta.row}: ${text}`);
+                const e = saveRes.result.result_error[meta.key];
+                state.errors.push(`Строка ${meta.row}: ${e.error_description || e.error || "Неизвестная ошибка"}`);
               } else {
                 if (meta.mode === "add") state.created += 1;
                 if (meta.mode === "update") state.updated += 1;
@@ -665,8 +703,19 @@
       }
     });
 
-    updateStats();
-    setProgress(0, 0);
+    (async function bootstrap() {
+      updateStats();
+      setProgress(0, 0);
+
+      const tokenFromUrl = extractTokenFromUrl();
+      const token = tokenFromUrl || localStorage.getItem(TOKEN_STORAGE_KEY) || "";
+      if (token) {
+        log("Проверка сохраненного токена...");
+        await validateToken(token);
+      } else {
+        clearAuthorization();
+      }
+    })();
   </script>
 </body>
 </html>
